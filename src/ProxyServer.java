@@ -6,6 +6,7 @@ import java.util.*;
 public class ProxyServer {
     private static final int PORT = 8080;
     private static final int CACHE_SIZE = 1; // Modify for more caching
+    private static double dropRate = 0.25;
 
     private static Map<String, byte[]> cache = new LinkedHashMap<>(CACHE_SIZE, 0.75f, true) {
         protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
@@ -14,12 +15,22 @@ public class ProxyServer {
     };
 
     public static void main(String[] args) {
+
+        for (String arg : args){
+            if (arg == "--drop"){ 
+                System.out.println("Simulating packet drop rate: " + (dropRate * 100) + "%");
+            }
+        }
+//Remove once using CLI args
+        if(dropRate !=0){
+            System.out.println("Simulating packet drop rate: " + (dropRate * 100) + "%");
+        }
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             System.out.println("Proxy Server started on port " + PORT);
 
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                new Thread(new ProxyHandler(clientSocket)).start();
+                new Thread(new ProxyHandler(clientSocket, dropRate)).start();
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -28,9 +39,11 @@ public class ProxyServer {
 
     static class ProxyHandler implements Runnable {
         private Socket clientSocket;
-
-        public ProxyHandler(Socket clientSocket) {
+        private double dropRate;
+        private Random random = new Random();
+        public ProxyHandler(Socket clientSocket, double dropRate) {
             this.clientSocket = clientSocket;
+            this.dropRate = dropRate;
         }
 
         public void run() {
@@ -71,59 +84,72 @@ public class ProxyServer {
 
                     while (base < totalPackets) {
 
-                        // fill window
+                        // Fill the window
                         while (nextSeqNum < base + windowSize && nextSeqNum < totalPackets) {
                             int start = nextSeqNum * blockSize;
                             int end = Math.min(start + blockSize, data.length);
                             byte[] chunk = Arrays.copyOfRange(data, start, end);
-        
                             TftpPacket packet = new TftpPacket(TftpPacket.OPCODE_DATA, nextSeqNum, chunk);
-                            out.write(packet.toBytes());
-                            out.flush();
+                    
+                            if (random.nextDouble() >= dropRate) {
+                                out.write(packet.toBytes());
+                                out.flush();
+                                System.out.println("Sent packet: " + nextSeqNum);
+                            } else {
+                                System.out.println("Oops packet dropped seq: " + nextSeqNum);
+                            }
+                    
                             sentPackets.put(nextSeqNum, packet);
                             sendTimes.put(nextSeqNum, System.currentTimeMillis());
-        
-                            System.out.println("Sent packet: " + nextSeqNum);
                             nextSeqNum++;
                         }
-        
-                        // Wait for ACK
-                        byte[] ackBytes = new byte[10];
-                        if (Client.readFully(in, ackBytes)) {
-                            TftpPacket ack = TftpPacket.fromBytes(ackBytes);
-                            if (ack.getOpcode() == TftpPacket.OPCODE_ACK) {
-                                int ackSeq = ack.getSequenceNumber();
-                                System.out.println("ACK received for seq: " + ackSeq);
-        
-                                if (ackSeq >= base) {
-                                    base = ackSeq + 1;
+                    
+                        // ✅ Try to receive ACK
+                        if (in.available() >= 10) {
+                            byte[] ackBytes = new byte[10];
+                            if (Client.readFully(in, ackBytes)) {
+                                TftpPacket ack = TftpPacket.fromBytes(ackBytes);
+                                if (ack.getOpcode() == TftpPacket.OPCODE_ACK) {
+                                    int ackSeq = ack.getSequenceNumber();
+                                    System.out.println("ACK received for seq: " + ackSeq);
                                     acked.add(ackSeq);
-                                }
-                                // Check for any unACKed packets that timed out
-                                long now = System.currentTimeMillis();
-                                List<Integer> toResend = new ArrayList<>();
 
-                                for (Map.Entry<Integer, TftpPacket> entry : sentPackets.entrySet()) {
-                                    int seq = entry.getKey();
-                                    if (!acked.contains(seq)) {
-                                        long sentAt = sendTimes.get(seq);
-                                        if (now - sentAt > timeoutMillis) {
-                                            toResend.add(seq);
-                                        }
+                                    // Slide base forward only if all packets before it are ACKed
+                                    while (acked.contains(base)) {
+                                        base++;
                                     }
                                 }
-                                // Resend timed-out packets
-                                for (int seq : toResend) {
-                                    TftpPacket pkt = sentPackets.get(seq);
-                                    System.out.println("Timeout: Resending packet " + seq);
-                                    out.write(pkt.toBytes());
-                                    out.flush();
-                                    sendTimes.put(seq, System.currentTimeMillis()); // reset timer
-                                }
-
                             }
                         }
+                    
+                        // ✅ Check for unACKed packets that timed out
+                        long now = System.currentTimeMillis();
+                        List<Integer> toResend = new ArrayList<>();
+                    
+                        for (Map.Entry<Integer, TftpPacket> entry : sentPackets.entrySet()) {
+                            int seq = entry.getKey();
+                            if (!acked.contains(seq)) {
+                                long sentAt = sendTimes.get(seq);
+                                if (now - sentAt > timeoutMillis) {
+                                    toResend.add(seq);
+                                }
+                            }
+                        }
+                    
+                        for (int seq : toResend) {
+                            TftpPacket pkt = sentPackets.get(seq);
+                            System.out.println("Timeout: Resending packet " + seq);
+                            out.write(pkt.toBytes());
+                            out.flush();
+                            sendTimes.put(seq, System.currentTimeMillis());
+                        }
+                    
+                        // ✅ Sleep to avoid tight loop
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException ignored) {}
                     }
+                    
         
                     // ✅ Once all ACKs received, send END
                     TftpPacket endPacket = new TftpPacket(TftpPacket.OPCODE_END, -1, new byte[0]);

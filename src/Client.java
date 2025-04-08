@@ -4,6 +4,8 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 public class Client {
     private static final String PROXY_HOST = "localhost";
@@ -25,7 +27,7 @@ public class Client {
                 out.writeInt(urlBytes.length);
                 out.write(urlBytes);
 
-                List<byte[]> receivedChunks = new ArrayList<>();
+                Map<Integer, byte[]> receivedChunks = new TreeMap<>();
                 InputStream rawIn = socket.getInputStream();
 
                 while (true) {
@@ -47,7 +49,7 @@ public class Client {
                             System.out.println("Failed to read data chunk of length: " + length);
                             break;
                         }
-                        receivedChunks.add(data);
+                        receivedChunks.put(sequence, data);
                         TftpPacket ack = new TftpPacket(TftpPacket.OPCODE_ACK, sequence, new byte[0]);
                         out.write(ack.toBytes());
                         out.flush();
@@ -63,7 +65,7 @@ public class Client {
 
                 // Reassemble and save file
                 ByteArrayOutputStream result = new ByteArrayOutputStream();
-                for (byte[] chunk : receivedChunks) {
+                for (byte[] chunk : receivedChunks.values()) {
                     result.write(chunk);
                 }
                 byte[] completeFile = result.toByteArray();
