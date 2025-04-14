@@ -5,23 +5,44 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.TreeMap;
 
 public class Client {
-    private static final String PROXY_HOST = "localhost";
-    private static final int PROXY_PORT = 8080;
+    private static String PROXY_HOST = "localhost";
+    private static final int PROXY_PORT = 27690;
 
     public static void main(String[] args) {
         String[] urls = {
             "https://cdn.britannica.com/55/2155-050-604F5A4A/lion.jpg?w=300"
         };
 
+        for (String arg : args) {
+            if (arg.startsWith("--host=")) {
+                PROXY_HOST = arg.substring(7);
+            } 
+        }
+
+        System.out.println("Running on: " + PROXY_HOST);
         for (String url : urls) {
             try (
                 Socket socket = new Socket(PROXY_HOST, PROXY_PORT);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
                 DataInputStream in = new DataInputStream(socket.getInputStream())
             ) {
+
+
+                //Encryption
+                Random random = new Random();
+                int senderId = 1111; 
+                int clientNonce = random.nextInt();
+
+                out.writeInt(senderId);
+                out.writeInt(clientNonce);
+                out.flush();
+
+                int sharedKey = senderId ^ clientNonce;
+                System.out.println("Key: " + sharedKey);
                 // Send URL (first send length, then the URL bytes)
                 byte[] urlBytes = url.getBytes();
                 out.writeInt(urlBytes.length);
@@ -49,7 +70,8 @@ public class Client {
                             System.out.println("Failed to read data chunk of length: " + length);
                             break;
                         }
-                        receivedChunks.put(sequence, data);
+                        byte[] decrypted = xorBytes(data, sharedKey);
+                        receivedChunks.put(sequence, decrypted);
                         TftpPacket ack = new TftpPacket(TftpPacket.OPCODE_ACK, sequence, new byte[0]);
                         out.write(ack.toBytes());
                         out.flush();
@@ -69,7 +91,7 @@ public class Client {
                     result.write(chunk);
                 }
                 byte[] completeFile = result.toByteArray();
-                System.out.println("Received file: " + completeFile.length + " bytes");
+                System.out.println("[RESULT] Received file: " + completeFile.length + " bytes");
 
                 String saveDir = "../static/";
                 String fileName = saveDir + "image_" + System.currentTimeMillis() + ".jpg";
@@ -91,6 +113,17 @@ public class Client {
             bytesRead += result;
         }
         return true;
+    }
+    
+    private static byte[] xorBytes(byte[] data, int key) {
+        byte[] result = new byte[data.length];
+        byte[] keyBytes = ByteBuffer.allocate(4).putInt(key).array();
+    
+        for (int i = 0; i < data.length; i++) {
+            result[i] = (byte) (data[i] ^ keyBytes[i % 4]);
+        }
+    
+        return result;
     }
     
 }

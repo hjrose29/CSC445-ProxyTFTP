@@ -1,12 +1,15 @@
 // ProxyServer.java
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.util.*;
 
 public class ProxyServer {
-    private static final int PORT = 8080;
+    private static final int PORT = 27690;
     private static final int CACHE_SIZE = 1; // Modify for more caching
-    private static double dropRate = 0.25;
+    private static double dropRate = 0;
+    private static int windowSize = 1;
+
 
     private static Map<String, byte[]> cache = new LinkedHashMap<>(CACHE_SIZE, 0.75f, true) {
         protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
@@ -16,12 +19,13 @@ public class ProxyServer {
 
     public static void main(String[] args) {
 
-        for (String arg : args){
-            if (arg == "--drop"){ 
-                System.out.println("Simulating packet drop rate: " + (dropRate * 100) + "%");
+        for (String arg : args) {
+            if (arg.startsWith("--drop=")) {
+                dropRate = Double.parseDouble(arg.substring(7));
+            } else if (arg.startsWith("--window=")) {
+                windowSize = Integer.parseInt(arg.substring(9));
             }
         }
-//Remove once using CLI args
         if(dropRate !=0){
             System.out.println("Simulating packet drop rate: " + (dropRate * 100) + "%");
         }
@@ -30,7 +34,7 @@ public class ProxyServer {
 
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                new Thread(new ProxyHandler(clientSocket, dropRate)).start();
+                new Thread(new ProxyHandler(clientSocket, dropRate, windowSize)).start();
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -41,14 +45,23 @@ public class ProxyServer {
         private Socket clientSocket;
         private double dropRate;
         private Random random = new Random();
-        public ProxyHandler(Socket clientSocket, double dropRate) {
+        private int windowSize;
+        public ProxyHandler(Socket clientSocket, double dropRate, int windowSize) {
             this.clientSocket = clientSocket;
             this.dropRate = dropRate;
+            this.windowSize = windowSize;
         }
 
         public void run() {
             try (DataInputStream in = new DataInputStream(clientSocket.getInputStream());
                 DataOutputStream out = new DataOutputStream(clientSocket.getOutputStream())) {
+
+
+                int senderId = in.readInt();
+                int clientKey = in.readInt();
+                int sharedKey = senderId ^ clientKey;
+
+                System.out.println("Key: " + sharedKey);
 
                 int urlLength = in.readInt();
                 byte[] urlBytes = new byte[urlLength];
@@ -70,9 +83,8 @@ public class ProxyServer {
 
                 if (data != null) {
                     int blockSize = 512;
-                    int sequence = 0;
+                    //int sequence = 0;
                     int totalPackets = (int) Math.ceil(data.length / (double) blockSize);
-                    int windowSize = 8;
                     int base = 0;
                     int nextSeqNum = 0;
 
@@ -88,8 +100,9 @@ public class ProxyServer {
                         while (nextSeqNum < base + windowSize && nextSeqNum < totalPackets) {
                             int start = nextSeqNum * blockSize;
                             int end = Math.min(start + blockSize, data.length);
-                            byte[] chunk = Arrays.copyOfRange(data, start, end);
-                            TftpPacket packet = new TftpPacket(TftpPacket.OPCODE_DATA, nextSeqNum, chunk);
+                            byte[] chunk = Arrays.copyOfRange(data, start, end);                            
+                            byte[] encryptedChunk = xorBytes(chunk, sharedKey);
+                            TftpPacket packet = new TftpPacket(TftpPacket.OPCODE_DATA, nextSeqNum, encryptedChunk);
                     
                             if (random.nextDouble() >= dropRate) {
                                 out.write(packet.toBytes());
@@ -104,7 +117,7 @@ public class ProxyServer {
                             nextSeqNum++;
                         }
                     
-                        // ✅ Try to receive ACK
+                        // Try to receive ACK
                         if (in.available() >= 10) {
                             byte[] ackBytes = new byte[10];
                             if (Client.readFully(in, ackBytes)) {
@@ -122,7 +135,7 @@ public class ProxyServer {
                             }
                         }
                     
-                        // ✅ Check for unACKed packets that timed out
+                        // Check for unACKed packets that timed out
                         long now = System.currentTimeMillis();
                         List<Integer> toResend = new ArrayList<>();
                     
@@ -176,6 +189,16 @@ public class ProxyServer {
                 e.printStackTrace();
                 return null;
             }
+        }
+
+        private static byte[] xorBytes(byte[] data, int key) {
+            byte[] result = new byte[data.length];
+            byte[] keyBytes = ByteBuffer.allocate(4).putInt(key).array();
+
+            for (int i = 0; i < data.length; i++) {
+                result[i] = (byte) (data[i] ^ keyBytes[i % 4]);
+            }
+            return result;
         }
     }
 }
