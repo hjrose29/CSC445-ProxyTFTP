@@ -1,0 +1,5 @@
+Running on: pi.cs.oswego.edu
+Key: -286621050
+Received END of transmission.
+[RESULT] Received file: 144003 bytes
+Saved image as: ../static/image_1744719250768.jpg

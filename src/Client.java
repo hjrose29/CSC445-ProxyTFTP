@@ -9,12 +9,12 @@ import java.util.Random;
 import java.util.TreeMap;
 
 public class Client {
-    private static String PROXY_HOST = "localhost";
+    private static String PROXY_HOST = "pi.cs.oswego.edu";
     private static final int PROXY_PORT = 27690;
 
     public static void main(String[] args) {
         String[] urls = {
-            "https://cdn.britannica.com/55/2155-050-604F5A4A/lion.jpg?w=300"
+            "https://cdn.britannica.com/55/2155-050-604F5A4A/lion.jpg?w=900"
         };
 
         for (String arg : args) {
